@@ -28,8 +28,17 @@ password=$(openssl rand -base64 12)
 
 # 创建用户并设置密码
 echo "正在创建用户 $username..."
-useradd -m "$username"
+useradd -m -s /bin/bash "$username"
+if [ $? -ne 0 ]; then
+    echo "错误：创建用户 $username 失败，请检查权限或用户名是否有效"
+    exit 1
+fi
+
 echo "$username:$password" | chpasswd
+if [ $? -ne 0 ]; then
+    echo "错误：设置用户 $username 密码失败"
+    exit 1
+fi
 
 # 检测系统类型
 if [ -f /etc/redhat-release ]; then
@@ -43,11 +52,24 @@ fi
 # 将用户添加到sudo组
 echo "正在添加用户到$SUDO_GROUP组..."
 usermod -aG "$SUDO_GROUP" "$username"
+if [ $? -ne 0 ]; then
+    echo "错误：将用户 $username 添加到$SUDO_GROUP组失败"
+    exit 1
+fi
 
 # 配置sudo免密权限
 echo "正在配置sudo免密权限..."
 echo "$username ALL=(ALL) NOPASSWD: ALL" > "/etc/sudoers.d/$username"
+if [ $? -ne 0 ]; then
+    echo "错误：创建sudo免密配置文件失败"
+    exit 1
+fi
+
 chmod 0440 "/etc/sudoers.d/$username"
+if [ $? -ne 0 ]; then
+    echo "错误：设置sudo配置文件权限失败"
+    exit 1
+fi
 
 # 显示结果
 echo "========================================"
