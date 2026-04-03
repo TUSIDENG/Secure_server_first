@@ -23,9 +23,33 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# 显示帮助信息
+show_help() {
+    echo "使用方法: $0 [选项] [域名]"
+    echo ""
+    echo "选项:"
+    echo "  -h, --help       显示此帮助信息"
+    echo "  --ca             使用根证书签名模式（默认：自签名）"
+    echo "  --ca-path PATH   指定根证书存储路径（默认：$OUTPUT_DIR）"
+    echo ""
+    echo "示例:"
+    echo "  $0 example.com                    # 生成自签名证书"
+    echo "  $0 --ca example.com               # 生成根证书并使用它签名"
+    echo "  $0 --ca --ca-path /path/to/ca example.com  # 指定根证书路径"
+    echo ""
+    echo "说明:"
+    echo "  - 如果不指定域名，脚本会交互式提示输入"
+    echo "  - 使用 --ca 模式时，如果指定路径已存在根证书，会直接复用"
+    echo "  - 生成的证书默认保存在 $OUTPUT_DIR 目录"
+    exit 0
+}
+
 # 解析参数
 while [[ $# -gt 0 ]]; do
     case $1 in
+        -h|--help)
+            show_help
+            ;;
         --ca)
             GENERATE_CA=true
             shift
