@@ -7,6 +7,8 @@
 OUTPUT_DIR="/etc/ssl/self_signed"
 DAYS_VALID=365
 KEY_SIZE=2048
+GENERATE_CA=false
+CA_PATH=""
 
 # 检查是否以 root 权限运行
 if [ "$EUID" -ne 0 ]; then
@@ -21,12 +23,26 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 获取域名参数或使用交互式输入
-if [ -n "$1" ]; then
-    DOMAIN="$1"
-    echo "使用传入的域名: $DOMAIN"
-else
-    # 提示用户输入域名
+# 解析参数
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --ca)
+            GENERATE_CA=true
+            shift
+            ;;
+        --ca-path)
+            CA_PATH="$2"
+            shift 2
+            ;;
+        *)
+            DOMAIN="$1"
+            shift
+            ;;
+    esac
+done
+
+# 如果没有通过参数传入域名，则交互式输入
+if [ -z "$DOMAIN" ]; then
     echo -n "请输入域名 (例如: example.com): "
     read DOMAIN
 fi
@@ -55,17 +71,103 @@ if [ -f "$KEY_FILE" ] || [ -f "$CERT_FILE" ]; then
 fi
 
 echo "========================================"
-echo "正在生成自签名 SSL 证书..."
+echo "正在生成 SSL 证书..."
 echo "域名: $DOMAIN"
 echo "有效期: $DAYS_VALID 天"
 echo "密钥大小: $KEY_SIZE 位"
+if [ "$GENERATE_CA" = true ]; then
+    echo "模式: 使用根证书签名"
+else
+    echo "模式: 自签名证书"
+fi
 echo "========================================"
 
-# 生成私钥和证书
-openssl req -x509 -nodes -days $DAYS_VALID -newkey rsa:$KEY_SIZE \
-    -keyout "$KEY_FILE" \
-    -out "$CERT_FILE" \
-    -subj "/C=CN/ST=State/L=City/O=Organization/CN=$DOMAIN"
+if [ "$GENERATE_CA" = true ]; then
+    # 确定根证书路径
+    if [ -n "$CA_PATH" ]; then
+        # 使用指定的根证书路径
+        CA_KEY_FILE="$CA_PATH/ca.key"
+        CA_CERT_FILE="$CA_PATH/ca.crt"
+    else
+        # 使用默认路径
+        CA_KEY_FILE="$OUTPUT_DIR/ca.key"
+        CA_CERT_FILE="$OUTPUT_DIR/ca.crt"
+    fi
+    
+    # 检查根证书是否已存在
+    if [ -f "$CA_KEY_FILE" ] && [ -f "$CA_CERT_FILE" ]; then
+        echo "检测到现有根证书，将直接使用："
+        echo "  根证书私钥: $CA_KEY_FILE"
+        echo "  根证书文件: $CA_CERT_FILE"
+    else
+        echo "正在生成根证书..."
+        
+        # 确保根证书目录存在
+        CA_DIR=$(dirname "$CA_KEY_FILE")
+        if [ ! -d "$CA_DIR" ]; then
+            mkdir -p "$CA_DIR"
+            if [ $? -ne 0 ]; then
+                echo "错误：无法创建根证书目录 $CA_DIR"
+                exit 1
+            fi
+        fi
+        
+        openssl genrsa -out "$CA_KEY_FILE" $KEY_SIZE
+        if [ $? -ne 0 ]; then
+            echo "错误：生成根证书私钥失败"
+            exit 1
+        fi
+        
+        openssl req -x509 -new -nodes -key "$CA_KEY_FILE" -sha256 -days $DAYS_VALID \
+            -out "$CA_CERT_FILE" \
+            -subj "/C=CN/ST=State/L=City/O=Organization/CN=My CA"
+        if [ $? -ne 0 ]; then
+            echo "错误：生成根证书失败"
+            exit 1
+        fi
+        
+        # 设置根证书权限
+        chmod 600 "$CA_KEY_FILE"
+        chmod 644 "$CA_CERT_FILE"
+        
+        echo "根证书生成成功："
+        echo "  根证书私钥: $CA_KEY_FILE"
+        echo "  根证书文件: $CA_CERT_FILE"
+    fi
+    
+    # 生成域名私钥和证书签名请求
+    openssl genrsa -out "$KEY_FILE" $KEY_SIZE
+    if [ $? -ne 0 ]; then
+        echo "错误：生成域名私钥失败"
+        exit 1
+    fi
+    
+    CSR_FILE="$OUTPUT_DIR/${DOMAIN}.csr"
+    openssl req -new -key "$KEY_FILE" \
+        -out "$CSR_FILE" \
+        -subj "/C=CN/ST=State/L=City/O=Organization/CN=$DOMAIN"
+    if [ $? -ne 0 ]; then
+        echo "错误：生成证书签名请求失败"
+        exit 1
+    fi
+    
+    # 使用根证书签名
+    openssl x509 -req -in "$CSR_FILE" -CA "$CA_CERT_FILE" -CAkey "$CA_KEY_FILE" \
+        -CAcreateserial -out "$CERT_FILE" -days $DAYS_VALID -sha256
+    if [ $? -ne 0 ]; then
+        echo "错误：使用根证书签名失败"
+        exit 1
+    fi
+    
+    # 删除CSR文件
+    rm -f "$CSR_FILE"
+else
+    # 生成自签名证书
+    openssl req -x509 -nodes -days $DAYS_VALID -newkey rsa:$KEY_SIZE \
+        -keyout "$KEY_FILE" \
+        -out "$CERT_FILE" \
+        -subj "/C=CN/ST=State/L=City/O=Organization/CN=$DOMAIN"
+fi
 
 # 检查生成是否成功
 if [ $? -ne 0 ]; then
@@ -88,12 +190,24 @@ fi
 
 echo "========================================"
 echo "证书生成成功！"
-echo "私钥文件: $KEY_FILE"
-echo "证书文件: $CERT_FILE"
+echo "域名证书私钥: $KEY_FILE"
+echo "域名证书文件: $CERT_FILE"
+if [ "$GENERATE_CA" = true ]; then
+    echo ""
+    echo "根证书信息："
+    echo "根证书私钥: $CA_KEY_FILE"
+    echo "根证书文件: $CA_CERT_FILE"
+fi
 echo "========================================"
 echo ""
 echo "使用说明："
-echo "1. 在 Nginx/Apache 配置中引用上述文件路径"
-echo "2. 客户端需要导入证书文件以信任此自签名证书"
+echo "1. 在 Nginx/Apache 配置中引用域名证书文件路径"
+if [ "$GENERATE_CA" = true ]; then
+    echo "2. 客户端只需导入根证书即可信任所有由此根证书签名的证书"
+    echo "   根证书路径: $CA_CERT_FILE"
+    echo "3. 可以将根证书分发到客户端设备上进行安装"
+else
+    echo "2. 客户端需要导入证书文件以信任此自签名证书"
+fi
 echo "3. 证书有效期为 $DAYS_VALID 天，到期后需要重新生成"
 echo "========================================"
